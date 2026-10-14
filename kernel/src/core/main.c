@@ -15,12 +15,19 @@
 #define USER_STACK_TOP UINT32_C(0x00800000)
 #define MAX_USER_IMAGE_PAGES 16U
 #define SYSTEM_ROM_TABLE_COUNT 4U
+#define USER_RAM_POOL_VADDR UINT32_C(0xc2000000)
 
-static uint32_t system_rom_tables[SYSTEM_ROM_TABLE_COUNT][1024]
+static uint32_t (*const system_rom_tables)[1024] =
+    (uint32_t (*)[1024])(uintptr_t)
+    (USER_RAM_POOL_VADDR +
+     MAX_USER_IMAGE_PAGES * MINEMU_PAGE_SIZE);
+
+static uint32_t user_page_table[1024]
     __attribute__((aligned(MINEMU_PAGE_SIZE)));
-static uint32_t user_page_table[1024] __attribute__((aligned(MINEMU_PAGE_SIZE)));
-static uint8_t user_image_pages[MAX_USER_IMAGE_PAGES][MINEMU_PAGE_SIZE]
-    __attribute__((aligned(MINEMU_PAGE_SIZE)));
+
+static uint8_t (*const user_image_pages)[MINEMU_PAGE_SIZE] =
+    (uint8_t (*)[MINEMU_PAGE_SIZE])(uintptr_t)
+    USER_RAM_POOL_VADDR;
 static uint8_t user_stack[MINEMU_PAGE_SIZE] __attribute__((aligned(MINEMU_PAGE_SIZE)));
 static uint32_t user_page_vaddrs[MAX_USER_IMAGE_PAGES];
 static uint32_t user_page_flags[MAX_USER_IMAGE_PAGES];
