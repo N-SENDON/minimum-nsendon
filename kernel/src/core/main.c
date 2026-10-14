@@ -303,6 +303,15 @@ struct minemu_trap_frame *minemu_svc_dispatch(struct minemu_trap_frame *frame) {
         return frame;
     }
 
+    if ((frame->spsr & 0x20U) != 0U ||
+        (frame->fault_pc & 3U) != 0U ||
+        !user_buffer_valid(frame->fault_pc, sizeof(uint32_t),
+                        MINEMU_PTE_READABLE | MINEMU_PTE_EXECUTABLE) ||
+        *(const uint32_t *)(uintptr_t)frame->fault_pc != UINT32_C(0xEF000000)) {
+        frame->r[0] = MINEMU_IOCTL_ERROR;
+        return frame;
+    }
+
     if (frame->r[7] != MINEMU_SYSCALL_IOCTL) {
         frame->r[0] = MINEMU_IOCTL_ERROR;
         return frame;
