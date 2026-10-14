@@ -347,6 +347,43 @@ struct minemu_trap_frame *minemu_svc_dispatch(struct minemu_trap_frame *frame) {
         frame->r[0] = length;
         break;
     }
+        case MINEMU_IOCTL_UART_READ: {
+        if (frame->r[0] != MINEMU_FD_UART_IN &&
+            frame->r[0] != MINEMU_FD_UART_DIAG) {
+            frame->r[0] = MINEMU_IOCTL_ERROR;
+            return frame;
+        }
+
+        uint32_t length = frame->r[3];
+
+        if (length > MINEMU_IOCTL_MAX_TRANSFER) {
+            frame->r[0] = MINEMU_IOCTL_ERROR;
+            return frame;
+        }
+
+        if (!user_buffer_valid(frame->r[2], length,
+                            MINEMU_PTE_WRITABLE)) {
+            frame->r[0] = MINEMU_IOCTL_ERROR;
+            return frame;
+        }
+
+        volatile struct minemu_uart_regs *uart =
+            (frame->r[0] == MINEMU_FD_UART_DIAG)
+            ? MINEMU_UART1 : MINEMU_UART0;
+
+        uint8_t *buffer = (uint8_t *)(uintptr_t)frame->r[2];
+        uint32_t count = 0;
+
+        while (count < length &&
+            (uart->status & MINEMU_UART_STATUS_RX_READY) != 0U) {
+
+            buffer[count] = (uint8_t)uart->rx_data;
+            count++;
+        }
+
+        frame->r[0] = count;
+        break;
+    }
         case MINEMU_IOCTL_RNG_STATE:
         case MINEMU_IOCTL_RNG_NEXT: {
             if (frame->r[0] != MINEMU_FD_RNG) {
@@ -398,8 +435,21 @@ struct minemu_trap_frame *minemu_svc_dispatch(struct minemu_trap_frame *frame) {
             frame->r[0] = 0;
             break;
         }
+        case MINEMU_IOCTL_UART_STATUS: {
+        if (frame->r[0] != MINEMU_FD_UART_IN &&
+            frame->r[0] != MINEMU_FD_UART_OUT &&
+            frame->r[0] != MINEMU_FD_UART_DIAG) {
+            frame->r[0] = MINEMU_IOCTL_ERROR;
+            return frame;
+        }
 
+        volatile struct minemu_uart_regs *uart =
+            (frame->r[0] == MINEMU_FD_UART_DIAG)
+            ? MINEMU_UART1 : MINEMU_UART0;
 
+        frame->r[0] = uart->status;
+        break;
+    }
         default:
             frame->r[0] = MINEMU_IOCTL_ERROR;
             return frame;
