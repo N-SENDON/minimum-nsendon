@@ -304,8 +304,32 @@ struct minemu_trap_frame *minemu_svc_dispatch(struct minemu_trap_frame *frame) {
         return frame;
     }
 
-    uint32_t mode = frame->spsr & 0x1F;
-    if (mode != 0x10) {
+    uint32_t mode = frame->spsr & 0x1FU;
+
+    if (mode != 0x10U) {
+        frame->r[0] = MINEMU_IOCTL_ERROR;
+        return frame;
+    }
+
+    if ((frame->spsr & 0x20U) != 0U) {
+        frame->r[0] = MINEMU_IOCTL_ERROR;
+        return frame;
+    }
+
+    if ((frame->fault_pc & 3U) != 0U ||
+        !user_buffer_valid(
+            frame->fault_pc,
+            sizeof(uint32_t),
+            MINEMU_PTE_READABLE | MINEMU_PTE_EXECUTABLE
+        )) {
+        frame->r[0] = MINEMU_IOCTL_ERROR;
+        return frame;
+    }
+
+    uint32_t instruction =
+        *(const uint32_t *)(uintptr_t)frame->fault_pc;
+
+    if (instruction != UINT32_C(0xEF000000)) {
         frame->r[0] = MINEMU_IOCTL_ERROR;
         return frame;
     }
@@ -317,80 +341,89 @@ struct minemu_trap_frame *minemu_svc_dispatch(struct minemu_trap_frame *frame) {
 
     switch (frame->r[1]) {
         case MINEMU_IOCTL_UART_WRITE: {
-        if (frame->r[0] != MINEMU_FD_UART_OUT) {
-            frame->r[0] = MINEMU_IOCTL_ERROR;
-            return frame;
-        }
-
-        if (frame->r[3] > MINEMU_IOCTL_MAX_TRANSFER) {
-            frame->r[0] = MINEMU_IOCTL_ERROR;
-            return frame;
-        }
-
-        if (frame->r[3] > 0 && frame->r[2] == 0x0) {
-            frame->r[0] = MINEMU_IOCTL_ERROR;
-            return frame;
-        }
-
-        if (!user_buffer_valid(frame->r[2], frame->r[3],
-                            MINEMU_PTE_READABLE)) {
-            frame->r[0] = MINEMU_IOCTL_ERROR;
-            return frame;
-        }
-
-        const uint8_t *buffer =
-            (const uint8_t *)(uintptr_t)frame->r[2];
-
-        uint32_t length = frame->r[3];
-
-        for (uint32_t i = 0; i < length; ++i) {
-            while ((MINEMU_UART0->status &
-                    MINEMU_UART_STATUS_TX_READY) == 0U) {
+            if (frame->r[0] != MINEMU_FD_UART_OUT) {
+                frame->r[0] = MINEMU_IOCTL_ERROR;
+                return frame;
             }
 
-            MINEMU_UART0->tx_data = buffer[i];
+            if (frame->r[3] > MINEMU_IOCTL_MAX_TRANSFER) {
+                frame->r[0] = MINEMU_IOCTL_ERROR;
+                return frame;
+            }
+
+            if (frame->r[3] > 0U && frame->r[2] == 0U) {
+                frame->r[0] = MINEMU_IOCTL_ERROR;
+                return frame;
+            }
+
+            if (!user_buffer_valid(
+                frame->r[2],
+                frame->r[3],
+                MINEMU_PTE_READABLE
+            )) {
+                frame->r[0] = MINEMU_IOCTL_ERROR;
+                return frame;
+            }
+
+            const uint8_t *buffer =
+                (const uint8_t *)(uintptr_t)frame->r[2];
+
+            uint32_t length = frame->r[3];
+
+            for (uint32_t i = 0; i < length; ++i) {
+                while ((MINEMU_UART0->status &
+                        MINEMU_UART_STATUS_TX_READY) == 0U) {
+                }
+
+                MINEMU_UART0->tx_data = buffer[i];
+            }
+
+            frame->r[0] = length;
+            break;
         }
 
-        frame->r[0] = length;
-        break;
-    }
         case MINEMU_IOCTL_UART_READ: {
-        if (frame->r[0] != MINEMU_FD_UART_IN &&
-            frame->r[0] != MINEMU_FD_UART_DIAG) {
-            frame->r[0] = MINEMU_IOCTL_ERROR;
-            return frame;
+            if (frame->r[0] != MINEMU_FD_UART_IN &&
+                frame->r[0] != MINEMU_FD_UART_DIAG) {
+                frame->r[0] = MINEMU_IOCTL_ERROR;
+                return frame;
+            }
+
+            uint32_t length = frame->r[3];
+
+            if (length > MINEMU_IOCTL_MAX_TRANSFER) {
+                frame->r[0] = MINEMU_IOCTL_ERROR;
+                return frame;
+            }
+
+            if (!user_buffer_valid(
+                frame->r[2],
+                length,
+                MINEMU_PTE_WRITABLE
+            )) {
+                frame->r[0] = MINEMU_IOCTL_ERROR;
+                return frame;
+            }
+
+            volatile struct minemu_uart_regs *uart =
+                (frame->r[0] == MINEMU_FD_UART_DIAG)
+                ? MINEMU_UART1 : MINEMU_UART0;
+
+            uint8_t *buffer =
+                (uint8_t *)(uintptr_t)frame->r[2];
+
+            uint32_t count = 0;
+
+            while (count < length &&
+                   (uart->status & MINEMU_UART_STATUS_RX_READY) != 0U) {
+                buffer[count] = (uint8_t)uart->rx_data;
+                count++;
+            }
+
+            frame->r[0] = count;
+            break;
         }
 
-        uint32_t length = frame->r[3];
-
-        if (length > MINEMU_IOCTL_MAX_TRANSFER) {
-            frame->r[0] = MINEMU_IOCTL_ERROR;
-            return frame;
-        }
-
-        if (!user_buffer_valid(frame->r[2], length,
-                            MINEMU_PTE_WRITABLE)) {
-            frame->r[0] = MINEMU_IOCTL_ERROR;
-            return frame;
-        }
-
-        volatile struct minemu_uart_regs *uart =
-            (frame->r[0] == MINEMU_FD_UART_DIAG)
-            ? MINEMU_UART1 : MINEMU_UART0;
-
-        uint8_t *buffer = (uint8_t *)(uintptr_t)frame->r[2];
-        uint32_t count = 0;
-
-        while (count < length &&
-            (uart->status & MINEMU_UART_STATUS_RX_READY) != 0U) {
-
-            buffer[count] = (uint8_t)uart->rx_data;
-            count++;
-        }
-
-        frame->r[0] = count;
-        break;
-    }
         case MINEMU_IOCTL_RNG_STATE:
         case MINEMU_IOCTL_RNG_NEXT: {
             if (frame->r[0] != MINEMU_FD_RNG) {
@@ -398,8 +431,11 @@ struct minemu_trap_frame *minemu_svc_dispatch(struct minemu_trap_frame *frame) {
                 return frame;
             }
 
-            if (!user_buffer_valid(frame->r[2], sizeof(uint32_t),
-                                MINEMU_PTE_WRITABLE)) {
+            if (!user_buffer_valid(
+                frame->r[2],
+                sizeof(uint32_t),
+                MINEMU_PTE_WRITABLE
+            )) {
                 frame->r[0] = MINEMU_IOCTL_ERROR;
                 return frame;
             }
@@ -412,8 +448,11 @@ struct minemu_trap_frame *minemu_svc_dispatch(struct minemu_trap_frame *frame) {
                 value = MINEMU_RNG->data;
             }
 
-            copy_bytes((void *)(uintptr_t)frame->r[2],
-                    &value, sizeof(value));
+            copy_bytes(
+                (void *)(uintptr_t)frame->r[2],
+                &value,
+                sizeof(value)
+            );
 
             frame->r[0] = 0;
             break;
@@ -426,7 +465,6 @@ struct minemu_trap_frame *minemu_svc_dispatch(struct minemu_trap_frame *frame) {
             }
 
             MINEMU_RNG->seed = frame->r[2];
-
             frame->r[0] = 0;
             break;
         }
@@ -438,29 +476,31 @@ struct minemu_trap_frame *minemu_svc_dispatch(struct minemu_trap_frame *frame) {
             }
 
             minemu_trace_event(frame->r[2]);
-
             frame->r[0] = 0;
             break;
         }
+
         case MINEMU_IOCTL_UART_STATUS: {
-        if (frame->r[0] != MINEMU_FD_UART_IN &&
-            frame->r[0] != MINEMU_FD_UART_OUT &&
-            frame->r[0] != MINEMU_FD_UART_DIAG) {
-            frame->r[0] = MINEMU_IOCTL_ERROR;
-            return frame;
+            if (frame->r[0] != MINEMU_FD_UART_IN &&
+                frame->r[0] != MINEMU_FD_UART_OUT &&
+                frame->r[0] != MINEMU_FD_UART_DIAG) {
+                frame->r[0] = MINEMU_IOCTL_ERROR;
+                return frame;
+            }
+
+            volatile struct minemu_uart_regs *uart =
+                (frame->r[0] == MINEMU_FD_UART_DIAG)
+                ? MINEMU_UART1 : MINEMU_UART0;
+
+            frame->r[0] = uart->status;
+            break;
         }
 
-        volatile struct minemu_uart_regs *uart =
-            (frame->r[0] == MINEMU_FD_UART_DIAG)
-            ? MINEMU_UART1 : MINEMU_UART0;
-
-        frame->r[0] = uart->status;
-        break;
-    }
         default:
             frame->r[0] = MINEMU_IOCTL_ERROR;
             return frame;
     }
+
     return frame;
 }
 
